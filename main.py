@@ -35,6 +35,8 @@ def initialize(number_regimes, lags, beta=None):
 
 # observations
 
+abc
+
 
 np.log(ols_resid)
 
