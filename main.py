@@ -25,17 +25,18 @@ def initialize(number_regimes, lags, beta=None):
     log_b = np.ones([k,k])
     log_b[np.diag_indices_from(log_b)] = logsumexp(2*log_resid, axis=1) # replacing diagonal elements
 
+    for t in range(obs):
+        u = log_resid[:,t]
+        = np.repeat(u,k) + np.tile(u,k)
     int_params = {'log_trans_prob_matrix': np.log(np.ones([number_regimes, number_regimes]) / number_regimes),
                   'epsilon_0': np.log(np.ones(number_regimes) / number_regimes),
                   'B_matrix':
-
                 }
     return int_params, delta_y_t, z_t_1
 
 
 # observations
 
-abc
 
 
 np.log(ols_resid)
