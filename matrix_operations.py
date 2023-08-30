@@ -54,3 +54,9 @@ def replace_diagonal(replacement_list):
     for i in range(len(replacement_list)):
         matrix[i, i] = replacement_list[i]
     return matrix
+
+
+def log_space_product(A,B):
+    Astack = np.stack([A]*B.shape[1]).transpose(1,0,2)
+    Bstack = np.stack([B]*A.shape[0]).transpose(0,2,1)
+    return logsumexp(Astack+Bstack, axis=2)
