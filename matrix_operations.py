@@ -1,5 +1,6 @@
 import numpy as np
 
+from scipy.special import logsumexp
 
 def mat_vec(matrix):
     """

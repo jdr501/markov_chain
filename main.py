@@ -52,16 +52,17 @@ def initialize(number_regimes, no_lags, beta_hat=None):
 # expectation step
 def e_step(residuals, params, regimes, epsilon_t0=None):
     obs = residuals.shape[1]  # number of observations
-
+    vec_log_p_trans = mat_vec(params['log_trans_prob_matrix'].T)
     # arrays to save filtered and forecast probabilities and likelihoods
     epsilon_t_t = np.zeros([regimes, obs])
     epsilon_t_t_1 = np.zeros([regimes, obs])
     likelihoods = np.zeros([obs])
 
     # conditional densities of the observed
-    eta_t = np.zeros([regimes, obs])
+    log_eta_t = np.zeros([regimes, obs])
+    # following is the log(log_eta_t)
     for regime in range(regimes):
-        eta_t[regime, :] = stats.multivariate_normal(mean=None, cov=params['Sigma'][regime]).logpdf(residuals.T).T
+        log_eta_t[regime, :] = stats.multivariate_normal(mean=None, cov=params['Sigma'][regime]).logpdf(residuals.T).T
 
     # vectorized log transition probabilities
     vec_log_b = mat_vec(params['log_trans_prob_matrix'])
@@ -86,40 +87,42 @@ def e_step(residuals, params, regimes, epsilon_t0=None):
             epsilon_t_t_1[regime, t] = logsumexp(values[start:start + regimes - 1])
             start += regimes
 
-        p_st_yt = epsilon_t_t[:, t] + eta_t[:, t]
+        p_st_yt = epsilon_t_t[:, t] + log_eta_t[:, t]
         likelihoods[t] = logsumexp(p_st_yt)
         epsilon_t_t[:, t] = p_st_yt - likelihoods[t]
 
     # smooth prob saving array
     smth_prob = np.zeros([regimes, obs])
-    left_array = np.zeros([regimes, obs])
-    smth_joint_prob = np.zeros([regimes, obs])  #joint prob of two different states
+    middle_array = np.zeros([regimes, obs])
+    smth_joint_prob = np.zeros([regimes * regimes, obs])  # joint prob of two different states
     # smoothed prob. iteration
-    smth_prob[:, -1] =  epsilon_t_t[:, obs]
+    smth_prob[:, -1] = epsilon_t_t[:, -1]
     # this is starting from T-1 to index zero.we have T-2 because we already got T from filtered prob
-    for t in range(obs-2,-1,-1):
-        left_array[:, t] =  smth_prob[:,t+1]  -   log_space_product( params['log_trans_prob_matrix'], epsilon_t_t[:, t] )
-        left_array[:, t] = log_space_product(params['log_trans_prob_matrix'].T,left_array[:,t] )
-        smth_prob[:, t] = left_array[:, t] + epsilon_t_t[:, t]
+    for t in range(obs - 2, -1, -1):
+        middle_array[:, [t]] = smth_prob[:, [t + 1]] - log_space_product(params['log_trans_prob_matrix'],
+                                                                         epsilon_t_t[:, [t]])
+        smth_prob[:, [t]] = log_space_product(params['log_trans_prob_matrix'].T, middle_array[:, [t]]) + \
+                            epsilon_t_t[:, [t]]
+
+        smth_joint_prob[:, [t]] = np.repeat(middle_array[:, [t]], regimes).reshape(-1, 1) + \
+                                  np.tile(epsilon_t_t[:, [t]], regimes).reshape(-1, 1)
+
+        smth_joint_prob[:, [t]] = vec_log_p_trans + smth_joint_prob[:, [t]]
+
+    return epsilon_t_t, likelihoods.sum(), smth_prob, smth_joint_prob
 
 
+def m_step(epsilon_t_t, smth_joint_prob, smth_prob, no_regimes):
+    # estimating transition probability
+    log_vec_p = logsumexp(smth_joint_prob, axis=1) - np.tile(logsumexp(smth_prob, axis=1), no_regimes)
 
 
-    return epsilon_t_t, likelihoods.sum()  , smoothed_prob
+    return log_vec_p
 
 
 # initialization
 params, y, x, resid = initialize(regimes, lags, beta_hat=beta)
-#expectation
-e_step(resid, params, regimes, epsilon_t0=None)
-''' 
-    np.log([stats.multivariate_normal(params["mu0"], params["sigma0"]).pdf(x),
-
-            stats.multivariate_normal(params["mu1"], params["sigma1"]).pdf(x)])
-
-    log_p_y_x = np.log([1 - params["phi"], params["phi"]])[np.newaxis, ...] + \
-                np.log([stats.multivariate_normal(params["mu0"], params["sigma0"]).pdf(x),
-                        stats.multivariate_normal(params["mu1"], params["sigma1"]).pdf(x)]).T
-    log_p_y_x_norm = logsumexp(log_p_y_x, axis=1)
-    return log_p_y_x_norm, np.exp(log_p_y_x - log_p_y_x_norm[..., np.newaxis])
-'''
+# expectation
+epsilon_t_t, likelihoods, smth_prob, smth_joint_prob = e_step(resid, params, regimes, epsilon_t0=None)
+# maximization
+m_step(epsilon_t_t, smth_joint_prob, smth_prob, regimes)
