@@ -4,6 +4,8 @@ from matrix_operations import vec_matrix, mat_vec, log_space_product
 from scipy import stats
 from scipy.linalg import sqrtm
 import data as data
+import optimization as op
+from scipy.optimize import minimize
 
 '''
 import pandas as pd
@@ -37,7 +39,7 @@ def initialize(number_regimes, no_lags, beta_hat=None):
     for t in range(obs):
         u = ols_resid[:, t]
         u_u[:, t] = np.repeat(u, k) * np.tile(u, k)
-    b_matrix = sqrtm(vec_matrix(u_u.sum(axis=1) / obs))  # initial b matrix vectorized
+    b_matrix = sqrtm(vec_matrix(u_u.sum(axis=1) / obs))
     b_matrix = b_matrix + np.random.normal(0, 0.1, size=(k, k))
     lam = []
 
@@ -63,7 +65,6 @@ def e_step(residuals, params, regimes, epsilon_t0=None):
     # following is the log(log_eta_t)
     for regime in range(regimes):
         log_eta_t[regime, :] = stats.multivariate_normal(mean=None, cov=params['Sigma'][regime]).logpdf(residuals.T).T
-
     # vectorized log transition probabilities
     vec_log_b = mat_vec(params['log_trans_prob_matrix'])
 
@@ -104,6 +105,9 @@ def e_step(residuals, params, regimes, epsilon_t0=None):
         smth_prob[:, [t]] = log_space_product(params['log_trans_prob_matrix'].T, middle_array[:, [t]]) + \
                             epsilon_t_t[:, [t]]
 
+    for t in range(obs - 1):
+        middle_array[:, [t]] = smth_prob[:, [t + 1]] - log_space_product(params['log_trans_prob_matrix'],
+                                                                         epsilon_t_t[:, [t]])
         smth_joint_prob[:, [t]] = np.repeat(middle_array[:, [t]], regimes).reshape(-1, 1) + \
                                   np.tile(epsilon_t_t[:, [t]], regimes).reshape(-1, 1)
 
@@ -112,10 +116,22 @@ def e_step(residuals, params, regimes, epsilon_t0=None):
     return epsilon_t_t, likelihoods.sum(), smth_prob, smth_joint_prob
 
 
-def m_step(epsilon_t_t, smth_joint_prob, smth_prob, no_regimes):
+def m_step(smth_joint_prob, smth_prob, no_regimes, parameters, x0):
     # estimating transition probability
     log_vec_p = logsumexp(smth_joint_prob, axis=1) - np.tile(logsumexp(smth_prob, axis=1), no_regimes)
 
+    # estimating Covariance matrices
+    bound_list = []
+    for i in range(len(x0)):
+        if i < parameters[1] ** 2:
+            bound_list.append((None, None))
+        else:
+            bound_list.append((0.01, None))
+
+    bound_list = tuple(bound_list)
+
+    minimize(op.marginal_density, x0, args=parameters, method='Newton-CG',
+             bounds=bound_list, jac=op.gradient_respecting_bounds(bound_list, op.marginal_density) )
 
     return log_vec_p
 
@@ -125,4 +141,10 @@ params, y, x, resid = initialize(regimes, lags, beta_hat=beta)
 # expectation
 epsilon_t_t, likelihoods, smth_prob, smth_joint_prob = e_step(resid, params, regimes, epsilon_t0=None)
 # maximization
-m_step(epsilon_t_t, smth_joint_prob, smth_prob, regimes)
+x0 = [5.96082486e+01, 5.74334765e-01, 2.83277325e-01, 3.66479528e+00,
+      -2.08881529e-01, 6.32170541e-04, -1.09137417e-01, -3.80763529e-01,
+      4.24379418e+00, 1.83658083e-01, 2.16692718e-03, 1.29590368e+00,
+      2.20826553e+00, -2.98484217e-01, -5.38269363e-03, 1.19668239e-03,
+      0.012, 0.102, 0.843, 16.52]
+parameters = [regimes, 4, resid, smth_prob]
+m_step(smth_joint_prob, smth_prob, regimes, parameters, x0)

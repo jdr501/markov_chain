@@ -51,6 +51,10 @@ def vec_summation(epsilon_t_t_upper_m, u_hat):
 
 
 def replace_diagonal(replacement_list):
+    """
+    :param replacement_list: array of numbers
+    :return: identity matrix with array of numbers
+    """
     matrix = np.identity(len(replacement_list))
     for i in range(len(replacement_list)):
         matrix[i, i] = replacement_list[i]
