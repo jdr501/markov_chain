@@ -6,6 +6,7 @@ from scipy.linalg import sqrtm
 import data as data
 import optimization as op
 from scipy.optimize import minimize
+from scipy.linalg import pinv
 
 '''
 import pandas as pd
@@ -112,11 +113,10 @@ def e_step(residuals, params, regimes, epsilon_t0=None):
                                   np.tile(epsilon_t_t[:, [t]], regimes).reshape(-1, 1)
 
         smth_joint_prob[:, [t]] = vec_log_p_trans + smth_joint_prob[:, [t]]
-
     return epsilon_t_t, likelihoods.sum(), smth_prob, smth_joint_prob
 
 
-def m_step(smth_joint_prob, smth_prob, no_regimes, parameters, x0):
+def m_step(smth_joint_prob, smth_prob, no_regimes, parameters, x0, zt, delta_y):
     # estimating transition probability
     log_vec_p = logsumexp(smth_joint_prob, axis=1) - np.tile(logsumexp(smth_prob, axis=1), no_regimes)
 
@@ -130,16 +130,44 @@ def m_step(smth_joint_prob, smth_prob, no_regimes, parameters, x0):
 
     bound_list = tuple(bound_list)
 
-    minimize(op.marginal_density, x0, args=parameters, method='Newton-CG',
-             bounds=bound_list, jac=op.gradient_respecting_bounds(bound_list, op.marginal_density) )
+    res = minimize(op.marginal_density, x0, args=parameters, method='cobyla',
+                   bounds=bound_list)
+    print(res.message)
+    b_mat, sigma = op.b_matrix_sigma(res.x, parameters[1], regimes)
 
-    return log_vec_p
+    # estimate weighted  least square parameters
+    for regime in range(regimes):
+        t_sum = np.zeros([zt.shape[0], zt.shape[0]])
+        m_sum = np.zeros([zt.shape[0]*parameters[1], zt.shape[0]*parameters[1]])
+        m_sum_numo = np.zeros([zt.shape[0]*parameters[1], parameters[1]])
+        t_sum_numo = np.zeros([zt.shape[0] * parameters[1], 1])
+        for t in range(zt.shape[1]):
+            t_sum += np.exp(smth_prob[regime, t]) * zt[:, [t]] @ zt[:, [t]].T
+        m_sum += np.kron(t_sum,   pinv(sigma[regime, :, :]))
+        denominator = pinv(m_sum)
+    for t in range(zt.shape[1]):
+        for regime in range(regimes):
+            m_sum_numo += np.kron(np.exp(smth_prob[regime, t]) * zt[:, [t]], pinv(sigma[regime, :, :]))
+        t_sum_numo += m_sum_numo @ delta_y[:, [t]]
+
+
+    theta_hat = denominator @ t_sum_numo
+
+    #residuals estimate
+    resid = np.zeros(delta_y.shape)
+    for t in range(zt.shape[1]):
+        resid[:, [t]] = delta_y[:, [t]] - np.kron(zt[:, [t]].T, np.identity(delta_y.shape[0])) @ theta_hat
+
+    return log_vec_p, b_mat, sigma, theta_hat, resid
 
 
 # initialization
-params, y, x, resid = initialize(regimes, lags, beta_hat=beta)
+params, delta_y, zt, resid = initialize(regimes, lags, beta_hat=beta)
 # expectation
 epsilon_t_t, likelihoods, smth_prob, smth_joint_prob = e_step(resid, params, regimes, epsilon_t0=None)
+
+
+
 # maximization
 x0 = [5.96082486e+01, 5.74334765e-01, 2.83277325e-01, 3.66479528e+00,
       -2.08881529e-01, 6.32170541e-04, -1.09137417e-01, -3.80763529e-01,
@@ -147,4 +175,16 @@ x0 = [5.96082486e+01, 5.74334765e-01, 2.83277325e-01, 3.66479528e+00,
       2.20826553e+00, -2.98484217e-01, -5.38269363e-03, 1.19668239e-03,
       0.012, 0.102, 0.843, 16.52]
 parameters = [regimes, 4, resid, smth_prob]
-m_step(smth_joint_prob, smth_prob, regimes, parameters, x0)
+
+m_step(smth_joint_prob, smth_prob, regimes, parameters, x0, zt, delta_y)
+
+
+
+
+def run_em(x, params):
+    avg_loglikelihoods = []
+    while True:
+        avg_loglikelihood = get_avg_log_likelihood(x, params)
+        avg_loglikelihoods.append(avg_loglikelihood)
+        if len(avg_loglikelihoods) > 2 and abs(avg_loglikelihoods[-1] - avg_loglikelihoods[-2]) < 0.0001:
+            break
