@@ -203,7 +203,8 @@ def run_em(regimes, lags, beta_hat=beta, max_itr=100):
         epsilon_t_t, likelihoods, smth_prob, smth_joint_prob = e_step(resid, params_expectation, regimes,
                                                                       epsilon_t0=None)
         i += 1
-    return params_expectation, smth_prob
+
+    return params_expectation, smth_prob, i
 
 
 print(run_em(regimes, lags, beta_hat=beta, ))
