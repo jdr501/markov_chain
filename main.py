@@ -7,12 +7,8 @@ import data as data
 import optimization as op
 from scipy.optimize import minimize
 from scipy.linalg import pinv
+from sklearn.covariance import LedoitWolf
 
-'''
-import pandas as pd
-from scipy import stats
-from sklearn.mixture import GaussianMixture
-'''
 
 # Model
 regimes = 2
@@ -43,11 +39,14 @@ def initialize(number_regimes, no_lags, beta_hat=None):
     b_matrix = sqrtm(vec_matrix(u_u.sum(axis=1) / obs))
     b_matrix = b_matrix + np.random.normal(0, 0.1, size=(k, k))
     lam = []
+    sigma_array = np.zeros([regimes, k, k])
+    for regime in range(regimes):
+        sigma_array[regime, :, :] = b_matrix @ b_matrix.T
 
     ini_params = {'log_trans_prob_matrix': np.log(np.ones([number_regimes, number_regimes]) / number_regimes),
                   'log_epsilon_0': np.log(np.ones(number_regimes) / number_regimes),
                   'B_matrix': b_matrix,
-                  'Sigma': [b_matrix @ b_matrix.T for regime in range(regimes)]
+                  'Sigma': sigma_array
                   }
     return ini_params, delta_y_t, z_t_1, ols_resid
 
@@ -56,6 +55,9 @@ def initialize(number_regimes, no_lags, beta_hat=None):
 def e_step(residuals, params, regimes, epsilon_t0=None):
     obs = residuals.shape[1]  # number of observations
     vec_log_p_trans = mat_vec(params['log_trans_prob_matrix'].T)
+    ## making sure sigma is positive semidefenite
+
+
     # arrays to save filtered and forecast probabilities and likelihoods
     epsilon_t_t = np.zeros([regimes, obs])
     epsilon_t_t_1 = np.zeros([regimes, obs])
@@ -65,7 +67,7 @@ def e_step(residuals, params, regimes, epsilon_t0=None):
     log_eta_t = np.zeros([regimes, obs])
     # following is the log(log_eta_t)
     for regime in range(regimes):
-        log_eta_t[regime, :] = stats.multivariate_normal(mean=None, cov=params['Sigma'][regime]).logpdf(residuals.T).T
+        log_eta_t[regime, :] = stats.multivariate_normal(mean=None, cov=params['Sigma'][regime, :, :]).logpdf(residuals.T).T
     # vectorized log transition probabilities
     vec_log_b = mat_vec(params['log_trans_prob_matrix'])
 
@@ -135,6 +137,14 @@ def m_step(smth_joint_prob, smth_prob, no_regimes, parameters, x0, zt, delta_y):
     print(res.message)
     b_mat, sigma = op.b_matrix_sigma(res.x, parameters[1], regimes)
 
+    mean_zero = np.zeros(parameters[1])
+    for regime in range(regimes):
+        x = np.random.multivariate_normal(mean=mean_zero, cov=sigma[regime, :, :], size=50, check_valid='ignore')
+        cov = LedoitWolf().fit(x)
+        sigma[regime, :, :] = cov.covariance_
+
+
+
     # estimate weighted  least square parameters
     for regime in range(regimes):
         t_sum = np.zeros([zt.shape[0], zt.shape[0]])
@@ -150,7 +160,6 @@ def m_step(smth_joint_prob, smth_prob, no_regimes, parameters, x0, zt, delta_y):
             m_sum_numo += np.kron(np.exp(smth_prob[regime, t]) * zt[:, [t]], pinv(sigma[regime, :, :]))
         t_sum_numo += m_sum_numo @ delta_y[:, [t]]
 
-
     theta_hat = denominator @ t_sum_numo
 
     #residuals estimate
@@ -158,33 +167,39 @@ def m_step(smth_joint_prob, smth_prob, no_regimes, parameters, x0, zt, delta_y):
     for t in range(zt.shape[1]):
         resid[:, [t]] = delta_y[:, [t]] - np.kron(zt[:, [t]].T, np.identity(delta_y.shape[0])) @ theta_hat
 
-    return log_vec_p, b_mat, sigma, theta_hat, resid
+    return log_vec_p, b_mat, sigma, theta_hat, resid, res.x
 
 
 # initialization
-params, delta_y, zt, resid = initialize(regimes, lags, beta_hat=beta)
-# expectation
-epsilon_t_t, likelihoods, smth_prob, smth_joint_prob = e_step(resid, params, regimes, epsilon_t0=None)
 
 
-
-# maximization
-x0 = [5.96082486e+01, 5.74334765e-01, 2.83277325e-01, 3.66479528e+00,
-      -2.08881529e-01, 6.32170541e-04, -1.09137417e-01, -3.80763529e-01,
-      4.24379418e+00, 1.83658083e-01, 2.16692718e-03, 1.29590368e+00,
-      2.20826553e+00, -2.98484217e-01, -5.38269363e-03, 1.19668239e-03,
-      0.012, 0.102, 0.843, 16.52]
-parameters = [regimes, 4, resid, smth_prob]
-
-m_step(smth_joint_prob, smth_prob, regimes, parameters, x0, zt, delta_y)
-
-
-
-
-def run_em(x, params):
+def run_em(regimes,lags,beta_hat=beta):
+    x0 = [5.96082486e+01, 5.74334765e-01, 2.83277325e-01, 3.66479528e+00,
+          -2.08881529e-01, 6.32170541e-04, -1.09137417e-01, -3.80763529e-01,
+          4.24379418e+00, 1.83658083e-01, 2.16692718e-03, 1.29590368e+00,
+          2.20826553e+00, -2.98484217e-01, -5.38269363e-03, 1.19668239e-03,
+          0.012, 0.102, 0.843, 16.52]
+    params_expectation, delta_y, zt, resid = initialize(regimes, lags, beta_hat)
+    epsilon_t_t, likelihoods, smth_prob, smth_joint_prob = e_step(resid, params_expectation, regimes, epsilon_t0=None)
     avg_loglikelihoods = []
     while True:
-        avg_loglikelihood = get_avg_log_likelihood(x, params)
+        avg_loglikelihood = np.mean(likelihoods)
         avg_loglikelihoods.append(avg_loglikelihood)
         if len(avg_loglikelihoods) > 2 and abs(avg_loglikelihoods[-1] - avg_loglikelihoods[-2]) < 0.0001:
             break
+
+        # maximization
+
+        parameters = [regimes, 4, resid, smth_prob]
+
+        log_vec_p, b_mat, sigma, theta_hat, resid, x0 = m_step(smth_joint_prob, smth_prob, regimes, parameters, x0, zt, delta_y)
+
+        params_expectation = {'log_trans_prob_matrix': vec_matrix(log_vec_p),
+                          'log_epsilon_0': smth_prob[:, [0]],
+                          'B_matrix': b_mat,
+                          'Sigma': sigma
+                          }
+        #expectation
+        epsilon_t_t, likelihoods, smth_prob, smth_joint_prob = e_step(resid, params_expectation, regimes, epsilon_t0=None)
+
+run_em(regimes, lags, beta_hat=beta)
