@@ -98,7 +98,7 @@ def e_step(residuals, params):
         p_st_yt = filtered_prob[:, t_] + conditional_prob[:, t_]
 
         # log likelihood of each observation
-        likelihoods[t_] = logsumexp(p_st_yt)
+        likelihoods[t_] = logsumexp(p_st_yt) #
 
         # filtered Prob
         filtered_prob[:, t_] = p_st_yt - likelihoods[t_]
