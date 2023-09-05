@@ -10,8 +10,8 @@ from scipy.linalg import pinv
 from sklearn.covariance import LedoitWolf
 
 # Model
-regimes = 2
-lags = 2
+params['regimes'] = 2
+lags = 3
 beta = np.array([0, 0, 0, 1]).reshape((-1, 1))  # must be shaped according to (number of variables, 1)
 
 
@@ -38,8 +38,8 @@ def initialize(number_regimes, no_lags, beta_hat=None):
     b_matrix = sqrtm(vec_matrix(u_u.sum(axis=1) / obs))
     b_matrix = b_matrix + np.random.normal(0, 0.1, size=(k, k))
     lam = []
-    sigma_array = np.zeros([regimes, k, k])
-    for regime in range(regimes):
+    sigma_array = np.zeros([params['regimes'], k, k])
+    for regime in range(params['regimes']):
         sigma_array[regime, :, :] = b_matrix @ b_matrix.T
 
     ini_params = {'log_trans_prob_matrix': np.log(np.ones([number_regimes, number_regimes]) / number_regimes),
@@ -50,71 +50,73 @@ def initialize(number_regimes, no_lags, beta_hat=None):
     return ini_params, delta_y_t, z_t_1, ols_resid
 
 
+parameters = {'regimes': params['regimes'],
+              'epsilon_0': epsilon_0,
+              'transition_prob_mat': p_mat,
+              'B_matrix': b_mat,
+              'lambda_m': lam_m,
+              'sigma': sigma_array,
+              'VECM_params': theta_hat,
+              'residuals': residuals}
+
+
 # expectation step
-def e_step(residuals, params, regimes, epsilon_t0=None):
-    obs = residuals.shape[1]  # number of observations
-    vec_log_p_trans = mat_vec(params['log_trans_prob_matrix'].T)
-    ## making sure sigma is positive semidefenite
+def e_step(residuals, params):
+    k, obs = residuals.shape  # number of observations
 
-    # arrays to save filtered and forecast probabilities and likelihoods
-    epsilon_t_t = np.zeros([regimes, obs])
-    epsilon_t_t_1 = np.zeros([regimes, obs])
-    likelihoods = np.zeros([obs])
+    # arrays to save estimated values NOTE THAT ALL PROBABILITIES ARE IN LOG!
+    conditional_prob = np.zeros([params['regimes'], obs])  # y_t|s_t = j conditional density of Y for a given state
+    filtered_prob = np.zeros(conditional_prob.shape)  # s_t|y_t
+    predicted_prob = np.zeros(conditional_prob.shape)  # s_t | y_t-1
+    likelihoods = np.zeros([obs])  # marginal density of observed variables
+    smoothed_joint_prob = np.zeros([obs, params['regimes'], params['regimes']])  # joint prob S_t = j, s_t-1 = k | y_T
+    smoothed_prob = np.zeros(conditional_prob.shape)  # prob S_t = j| y_T
+    vec_trans_prob_mat = mat_vec(params['B_matrix'].T)
 
-    # conditional densities of the observed
-    log_eta_t = np.zeros([regimes, obs])
-    # following is the log(log_eta_t)
-    for regime in range(regimes):
-        log_eta_t[regime, :] = stats.multivariate_normal(mean=None, cov=params['Sigma'][regime, :, :]).logpdf(
-            residuals.T).T
-    # vectorized log transition probabilities
-    vec_log_b = mat_vec(params['log_trans_prob_matrix'])
+    # conditional_prob of the observed variables IN LOG
+    for r in range(params['regimes']):
+        conditional_prob[r, :] = stats.multivariate_normal(mean=None,
+                                                           cov=params['sigma'][r, :, :]).logpdf(residuals.T).T
 
-    for t in range(obs):
-        # making sure that starting filtered values are taken properly
-        if t == 0 and epsilon_t0 is None:
-            filtered_prob = params['log_epsilon_0']
+    # Hamilton filter/ filtered probability IN LOG
 
-        elif t == 0 and epsilon_t0 is not None:
-            filtered_prob = epsilon_t0
+    for t_ in range(obs):
+
+        # taking starting values
+        if t_ == 0:
+            flt_prob_temp = params['epsilon_0']
         else:
-            filtered_prob = epsilon_t_t[:, t]
+            flt_prob_temp = filtered_prob[:, [t_]]
 
-        filtered_prob = filtered_prob.reshape([-1, 1])
-
-        # tabulating the epsilon_t_t-1
+        # Predicted prob.
         start = 0
-        values = vec_log_b + np.tile(filtered_prob.T, regimes).T
+        values = vec_trans_prob_mat + np.tile(flt_prob_temp.T, params['regimes']).T
+        for r in range(params['regimes']):
+            predicted_prob[r, t_] = logsumexp(values[start:start + params['regimes'] - 1])
+            start += params['regimes']
+        # joint prob
+        p_st_yt = filtered_prob[:, t_] + conditional_prob[:, t_]
 
-        for regime in range(regimes):
-            epsilon_t_t_1[regime, t] = logsumexp(values[start:start + regimes - 1])
-            start += regimes
+        # log likelihood of each observation
+        likelihoods[t_] = logsumexp(p_st_yt)
 
-        p_st_yt = epsilon_t_t[:, t] + log_eta_t[:, t]
-        likelihoods[t] = logsumexp(p_st_yt)
-        epsilon_t_t[:, t] = p_st_yt - likelihoods[t]
+        # filtered Prob
+        filtered_prob[:, t_] = p_st_yt - likelihoods[t_]
 
-    # smooth prob saving array
-    smth_prob = np.zeros([regimes, obs])
-    middle_array = np.zeros([regimes, obs])
-    smth_joint_prob = np.zeros([regimes * regimes, obs])  # joint prob of two different states
-    # smoothed prob. iteration
-    smth_prob[:, -1] = epsilon_t_t[:, -1]
-    # this is starting from T-1 to index zero.we have T-2 because we already got T from filtered prob
-    for t in range(obs - 2, -1, -1):
-        middle_array[:, [t]] = smth_prob[:, [t + 1]] - log_space_product(params['log_trans_prob_matrix'],
-                                                                         epsilon_t_t[:, [t]])
-        smth_prob[:, [t]] = log_space_product(params['log_trans_prob_matrix'].T, middle_array[:, [t]]) + \
-                            epsilon_t_t[:, [t]]
+    # smooth prob
+    for t_ in range(obs - 1, -1, -1):  # from T ... 0
+        if t_ == obs - 1:
+            smoothed_prob[:, [t_]] = filtered_prob[:, [t_]]
+        else:
+            for r_j in range(params['regimes']):
+                smoothed_prob[r_j, t_] = logsumexp(smoothed_joint_prob[t_, r_j, :])
+        for r_j in range(params['regimes']):  # regime j at time t
+            for r_k in range(params['regimes']):  # regime k at time t+1
+                smoothed_joint_prob[t_, r_j, r_k] = smoothed_prob[r_k, t_ + 1] \
+                                                    + filtered_prob[r_j, t_] \
+                                                    + params['B_matrix'][r_j, r_k] - predicted_prob[r_k, t_ + 1]
 
-    for t in range(obs - 1):
-        middle_array[:, [t]] = smth_prob[:, [t + 1]] - log_space_product(params['log_trans_prob_matrix'],
-                                                                         epsilon_t_t[:, [t]])
-        smth_joint_prob[:, [t]] = np.repeat(middle_array[:, [t]], regimes).reshape(-1, 1) + \
-                                  np.tile(epsilon_t_t[:, [t]], regimes).reshape(-1, 1)
-
-        smth_joint_prob[:, [t]] = vec_log_p_trans + smth_joint_prob[:, [t]]
-    return epsilon_t_t, likelihoods.sum(), smth_prob, smth_joint_prob
+    return likelihoods.sum(), smoothed_prob, smoothed_joint_prob
 
 
 def m_step(smth_joint_prob, smth_prob, no_regimes, parameters, x0, zt, delta_y):
@@ -134,16 +136,18 @@ def m_step(smth_joint_prob, smth_prob, no_regimes, parameters, x0, zt, delta_y):
     res = minimize(op.marginal_density, x0, args=parameters, method='cobyla',
                    bounds=bound_list)
     print(res.message)
-    b_mat, sigma = op.b_matrix_sigma(res.x, parameters[1], regimes)
+    print(res.x)
 
+    b_mat, sigma = op.b_matrix_sigma(res.x, parameters[1], params['regimes'])
+    """ 
     mean_zero = np.zeros(parameters[1])
     for regime in range(regimes):
         x = np.random.multivariate_normal(mean=mean_zero, cov=sigma[regime, :, :], size=50, check_valid='ignore')
         cov = LedoitWolf().fit(x)
         sigma[regime, :, :] = cov.covariance_
-
+    """
     # estimate weighted  least square parameters
-    for regime in range(regimes):
+    for regime in range(params['regimes']):
         t_sum = np.zeros([zt.shape[0], zt.shape[0]])
         m_sum = np.zeros([zt.shape[0] * parameters[1], zt.shape[0] * parameters[1]])
         m_sum_numo = np.zeros([zt.shape[0] * parameters[1], parameters[1]])
@@ -153,7 +157,7 @@ def m_step(smth_joint_prob, smth_prob, no_regimes, parameters, x0, zt, delta_y):
         m_sum += np.kron(t_sum, pinv(sigma[regime, :, :]))
         denominator = pinv(m_sum)
     for t in range(zt.shape[1]):
-        for regime in range(regimes):
+        for regime in range(params['regimes']):
             m_sum_numo += np.kron(np.exp(smth_prob[regime, t]) * zt[:, [t]], pinv(sigma[regime, :, :]))
         t_sum_numo += m_sum_numo @ delta_y[:, [t]]
 
@@ -180,11 +184,10 @@ def run_em(regimes, lags, beta_hat=beta, max_itr=100):
     epsilon_t_t, likelihoods, smth_prob, smth_joint_prob = e_step(resid, params_expectation, regimes, epsilon_t0=None)
     avg_loglikelihoods = []
     i = 0
-    while True:
+    while i < 3:
         avg_loglikelihood = np.mean(likelihoods)
         avg_loglikelihoods.append(avg_loglikelihood)
-        if i >= max_itr and len(avg_loglikelihoods) > 2 and abs(
-                avg_loglikelihoods[-1] - avg_loglikelihoods[-2]) < 0.0001:
+        if len(avg_loglikelihoods) > 2 and abs(avg_loglikelihoods[-1] - avg_loglikelihoods[-2]) < 0.0001:
             break
 
         # maximization
@@ -194,12 +197,14 @@ def run_em(regimes, lags, beta_hat=beta, max_itr=100):
         log_vec_p, b_mat, sigma, theta_hat, resid, x0 = m_step(smth_joint_prob, smth_prob, regimes, parameters, x0, zt,
                                                                delta_y)
 
-        params_expectation = {'log_trans_prob_matrix': vec_matrix(log_vec_p),
+        params_expectation = {'log_trans_prob_matrix': vec_matrix(log_vec_p).T,
                               'log_epsilon_0': smth_prob[:, [0]],
                               'B_matrix': b_mat,
                               'Sigma': sigma
                               }
         # expectation
+        print(b_mat)
+        print(sigma)
         epsilon_t_t, likelihoods, smth_prob, smth_joint_prob = e_step(resid, params_expectation, regimes,
                                                                       epsilon_t0=None)
         i += 1
@@ -207,4 +212,4 @@ def run_em(regimes, lags, beta_hat=beta, max_itr=100):
     return params_expectation, smth_prob, i
 
 
-print(run_em(regimes, lags, beta_hat=beta, ))
+print(run_em(params['regimes'], lags, beta_hat=beta, ))

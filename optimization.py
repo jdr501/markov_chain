@@ -9,6 +9,7 @@ from statsmodels.tools.numdiff import approx_fprime_cs, approx_hess_cs
 
 
 def marginal_density(x, parameters):
+    print(f'this is x :{x}')
     regimes, k, residuals, smoothed_prob = parameters
     b_mat = vec_matrix(np.array(x[0:k ** 2]))
     lam_m = np.zeros([regimes - 1, k, k])
@@ -29,7 +30,7 @@ def marginal_density(x, parameters):
             sigma[regime, :, :] = b_mat @ b_mat.T
         else:
             sigma[regime, :, :] = b_mat @ lam_m[regime - 1, :, :] @ b_mat.T
-        x = np.random.multivariate_normal(mean=mean_zero, cov=sigma[regime, :, :], size=50,check_valid='ignore')
+        x = np.random.multivariate_normal(mean=mean_zero, cov=sigma[regime, :, :], size=50, check_valid='ignore')
         cov = LedoitWolf().fit(x)
         sigma[regime, :, :] = cov.covariance_
 
@@ -94,7 +95,7 @@ def fprime(params, transformed=True):
  '''
 
 
-def b_matrix_sigma(x,k,regimes):
+def b_matrix_sigma(x, k, regimes):
     b_mat = vec_matrix(np.array(x[0:k ** 2]))
     lam_m = np.zeros([regimes - 1, k, k])
     start = k * k
