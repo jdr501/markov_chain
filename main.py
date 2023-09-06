@@ -10,7 +10,7 @@ from scipy.linalg import pinv
 from sklearn.covariance import LedoitWolf
 
 # Model
-params['regimes'] = 2
+regimes = 2
 lags = 3
 beta = np.array([0, 0, 0, 1]).reshape((-1, 1))  # must be shaped according to (number of variables, 1)
 
@@ -38,26 +38,18 @@ def initialize(number_regimes, no_lags, beta_hat=None):
     b_matrix = sqrtm(vec_matrix(u_u.sum(axis=1) / obs))
     b_matrix = b_matrix + np.random.normal(0, 0.1, size=(k, k))
     lam = []
-    sigma_array = np.zeros([params['regimes'], k, k])
-    for regime in range(params['regimes']):
+    sigma_array = np.zeros([regimes, k, k])
+    for regime in range(regimes):
         sigma_array[regime, :, :] = b_matrix @ b_matrix.T
 
-    ini_params = {'log_trans_prob_matrix': np.log(np.ones([number_regimes, number_regimes]) / number_regimes),
-                  'log_epsilon_0': np.log(np.ones(number_regimes) / number_regimes),
-                  'B_matrix': b_matrix,
-                  'Sigma': sigma_array
-                  }
-    return ini_params, delta_y_t, z_t_1, ols_resid
-
-
-parameters = {'regimes': params['regimes'],
-              'epsilon_0': epsilon_0,
-              'transition_prob_mat': p_mat,
-              'B_matrix': b_mat,
-              'lambda_m': lam_m,
+    params = {'regimes': number_regimes,
+              'epsilon_0': np.log(np.ones(number_regimes) / number_regimes),
+              'transition_prob_mat': np.log(np.ones([number_regimes, number_regimes]) / number_regimes),
+              'B_matrix': b_matrix,
+              'lambda_m': np.identity(b_matrix.shape[0]),
               'sigma': sigma_array,
-              'VECM_params': theta_hat,
-              'residuals': residuals}
+              'VECM_params': None}
+    return params, delta_y_t, z_t_1, ols_resid
 
 
 # expectation step
@@ -80,17 +72,18 @@ def e_step(residuals, params):
 
     # Hamilton filter/ filtered probability IN LOG
 
-    for t_ in range(obs):
-
+    for t_ in range(0, obs):
+        print(f'this is t: {t_}')
         # taking starting values
-        if t_ == 0:
+        if t_ == -1:
             flt_prob_temp = params['epsilon_0']
         else:
-            flt_prob_temp = filtered_prob[:, [t_]]
-
+            flt_prob_temp = filtered_prob[:, [t_-1]]
+        print(f'this is temp flt prob{flt_prob_temp}')
         # Predicted prob.
         start = 0
-        values = vec_trans_prob_mat + np.tile(flt_prob_temp.T, params['regimes']).T
+        print(np.tile(flt_prob_temp.T, params['regimes']))
+        values = (vec_trans_prob_mat + np.tile(flt_prob_temp.T, params['regimes'])).T
         for r in range(params['regimes']):
             predicted_prob[r, t_] = logsumexp(values[start:start + params['regimes'] - 1])
             start += params['regimes']
@@ -98,7 +91,7 @@ def e_step(residuals, params):
         p_st_yt = filtered_prob[:, t_] + conditional_prob[:, t_]
 
         # log likelihood of each observation
-        likelihoods[t_] = logsumexp(p_st_yt) #
+        likelihoods[t_] = logsumexp(p_st_yt)  #
 
         # filtered Prob
         filtered_prob[:, t_] = p_st_yt - likelihoods[t_]
@@ -115,13 +108,13 @@ def e_step(residuals, params):
                 smoothed_joint_prob[t_, r_j, r_k] = smoothed_prob[r_k, t_ + 1] \
                                                     + filtered_prob[r_j, t_] \
                                                     + params['B_matrix'][r_j, r_k] - predicted_prob[r_k, t_ + 1]
+    print(smoothed_joint_prob)
+    return smoothed_joint_prob, smoothed_prob, likelihoods.sum()
 
-    return likelihoods.sum(), smoothed_prob, smoothed_joint_prob
 
-
-def m_step(smth_joint_prob, smth_prob, no_regimes, parameters, x0, zt, delta_y):
+def m_step(smoothed_joint_prob, smoothed_prob, no_regimes, parameters, x0, zt, delta_y):
     # estimating transition probability
-    log_vec_p = logsumexp(smth_joint_prob, axis=1) - np.tile(logsumexp(smth_prob, axis=1), no_regimes)
+    log_vec_p = logsumexp(smoothed_joint_prob, axis=1) - np.tile(logsumexp(smoothed_prob, axis=1), no_regimes)
 
     # estimating Covariance matrices
     bound_list = []
@@ -153,12 +146,12 @@ def m_step(smth_joint_prob, smth_prob, no_regimes, parameters, x0, zt, delta_y):
         m_sum_numo = np.zeros([zt.shape[0] * parameters[1], parameters[1]])
         t_sum_numo = np.zeros([zt.shape[0] * parameters[1], 1])
         for t in range(zt.shape[1]):
-            t_sum += np.exp(smth_prob[regime, t]) * zt[:, [t]] @ zt[:, [t]].T
+            t_sum += np.exp(smoothed_prob[regime, t]) * zt[:, [t]] @ zt[:, [t]].T
         m_sum += np.kron(t_sum, pinv(sigma[regime, :, :]))
         denominator = pinv(m_sum)
     for t in range(zt.shape[1]):
         for regime in range(params['regimes']):
-            m_sum_numo += np.kron(np.exp(smth_prob[regime, t]) * zt[:, [t]], pinv(sigma[regime, :, :]))
+            m_sum_numo += np.kron(np.exp(smoothed_prob[regime, t]) * zt[:, [t]], pinv(sigma[regime, :, :]))
         t_sum_numo += m_sum_numo @ delta_y[:, [t]]
 
     theta_hat = denominator @ t_sum_numo
@@ -180,8 +173,10 @@ def run_em(regimes, lags, beta_hat=beta, max_itr=100):
           4.24379418e+00, 1.83658083e-01, 2.16692718e-03, 1.29590368e+00,
           2.20826553e+00, -2.98484217e-01, -5.38269363e-03, 1.19668239e-03,
           0.012, 0.102, 0.843, 16.52]
-    params_expectation, delta_y, zt, resid = initialize(regimes, lags, beta_hat)
-    epsilon_t_t, likelihoods, smth_prob, smth_joint_prob = e_step(resid, params_expectation, regimes, epsilon_t0=None)
+
+    params, delta_y_t, z_t_1, ols_resid = initialize(regimes, lags, beta_hat)
+
+    epsilon_t_t, likelihoods, smth_prob, smth_joint_prob = e_step(ols_resid, params)
     avg_loglikelihoods = []
     i = 0
     while i < 3:
@@ -212,4 +207,4 @@ def run_em(regimes, lags, beta_hat=beta, max_itr=100):
     return params_expectation, smth_prob, i
 
 
-print(run_em(params['regimes'], lags, beta_hat=beta, ))
+print(run_em(regimes, lags, beta_hat=beta, ))
