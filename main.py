@@ -43,7 +43,7 @@ def initialize(number_regimes, no_lags, beta_hat=None):
         sigma_array[regime, :, :] = b_matrix @ b_matrix.T
 
     params = {'regimes': number_regimes,
-              'epsilon_0': np.log(np.ones(number_regimes) / number_regimes),
+              'epsilon_0': (np.log(np.ones(number_regimes) / number_regimes)).reshape(-1, 1),
               'transition_prob_mat': np.log(np.ones([number_regimes, number_regimes]) / number_regimes),
               'B_matrix': b_matrix,
               'lambda_m': np.identity(b_matrix.shape[0]),
@@ -63,30 +63,35 @@ def e_step(residuals, params):
     likelihoods = np.zeros([obs])  # marginal density of observed variables
     smoothed_joint_prob = np.zeros([obs, params['regimes'], params['regimes']])  # joint prob S_t = j, s_t-1 = k | y_T
     smoothed_prob = np.zeros(conditional_prob.shape)  # prob S_t = j| y_T
-    vec_trans_prob_mat = mat_vec(params['B_matrix'].T)
-
+    vec_trans_prob_mat = mat_vec(params['transition_prob_mat'])
     # conditional_prob of the observed variables IN LOG
     for r in range(params['regimes']):
         conditional_prob[r, :] = stats.multivariate_normal(mean=None,
                                                            cov=params['sigma'][r, :, :]).logpdf(residuals.T).T
 
     # Hamilton filter/ filtered probability IN LOG
-
     for t_ in range(0, obs):
-        print(f'this is t: {t_}')
+        print(f'hamilton iteration:{t_} ')
         # taking starting values
-        if t_ == -1:
+        if t_ == 0:
             flt_prob_temp = params['epsilon_0']
         else:
             flt_prob_temp = filtered_prob[:, [t_-1]]
-        print(f'this is temp flt prob{flt_prob_temp}')
+
+
         # Predicted prob.
         start = 0
-        print(np.tile(flt_prob_temp.T, params['regimes']))
-        values = (vec_trans_prob_mat + np.tile(flt_prob_temp.T, params['regimes'])).T
+        values = vec_trans_prob_mat + np.tile(flt_prob_temp.T, params['regimes']).reshape(-1,1)
+
+        print(f'this is values: {values}')
+
         for r in range(params['regimes']):
-            predicted_prob[r, t_] = logsumexp(values[start:start + params['regimes'] - 1])
+            sum_over = values[start:start + params['regimes'] ]
+            print(f'sum over: {sum_over}')
+            predicted_prob[r, t_] = logsumexp(sum_over)
             start += params['regimes']
+
+        print(f'this is predicted prob: {predicted_prob[:, [t_]]} ')
         # joint prob
         p_st_yt = filtered_prob[:, t_] + conditional_prob[:, t_]
 
@@ -97,17 +102,24 @@ def e_step(residuals, params):
         filtered_prob[:, t_] = p_st_yt - likelihoods[t_]
 
     # smooth prob
-    for t_ in range(obs - 1, -1, -1):  # from T ... 0
-        if t_ == obs - 1:
-            smoothed_prob[:, [t_]] = filtered_prob[:, [t_]]
-        else:
-            for r_j in range(params['regimes']):
-                smoothed_prob[r_j, t_] = logsumexp(smoothed_joint_prob[t_, r_j, :])
+    smoothed_prob[:, [-1]] = filtered_prob[:, [-1]]
+    print(smoothed_prob[:, [obs-1]])
+    print(f"this is transition prob: {params['transition_prob_mat']}")
+    for t_ in range(obs-2, -1, -1):  # T-1, ..., 1
         for r_j in range(params['regimes']):  # regime j at time t
             for r_k in range(params['regimes']):  # regime k at time t+1
-                smoothed_joint_prob[t_, r_j, r_k] = smoothed_prob[r_k, t_ + 1] \
+                smoothed_joint_prob[t_, r_j, r_k] = smoothed_prob[r_k, t_+1] \
                                                     + filtered_prob[r_j, t_] \
-                                                    + params['B_matrix'][r_j, r_k] - predicted_prob[r_k, t_ + 1]
+                                                    + params['transition_prob_mat'][r_j, r_k] \
+                                                    - predicted_prob[r_k, t_]
+
+        for r_j in range(params['regimes']):
+            smoothed_prob[r_j, t_] = logsumexp(smoothed_joint_prob[t_, r_j, :])
+        print(f'this is t:{t_}')
+        print(f'smoothed  joint prob{smoothed_joint_prob[t_, :, :]}')
+        print(f'smoothed prob{ smoothed_prob[:, [t_]]}')
+
+
     print(smoothed_joint_prob)
     return smoothed_joint_prob, smoothed_prob, likelihoods.sum()
 
@@ -115,6 +127,7 @@ def e_step(residuals, params):
 def m_step(smoothed_joint_prob, smoothed_prob, no_regimes, parameters, x0, zt, delta_y):
     # estimating transition probability
     log_vec_p = logsumexp(smoothed_joint_prob, axis=1) - np.tile(logsumexp(smoothed_prob, axis=1), no_regimes)
+    transition_prob_mat =
 
     # estimating Covariance matrices
     bound_list = []
@@ -176,11 +189,11 @@ def run_em(regimes, lags, beta_hat=beta, max_itr=100):
 
     params, delta_y_t, z_t_1, ols_resid = initialize(regimes, lags, beta_hat)
 
-    epsilon_t_t, likelihoods, smth_prob, smth_joint_prob = e_step(ols_resid, params)
+    smoothed_joint_prob, smoothed_prob, log_likelihoods = e_step(ols_resid, params)
     avg_loglikelihoods = []
     i = 0
     while i < 3:
-        avg_loglikelihood = np.mean(likelihoods)
+        avg_loglikelihood = np.mean(log_likelihoods)
         avg_loglikelihoods.append(avg_loglikelihood)
         if len(avg_loglikelihoods) > 2 and abs(avg_loglikelihoods[-1] - avg_loglikelihoods[-2]) < 0.0001:
             break
