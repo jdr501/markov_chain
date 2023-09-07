@@ -78,7 +78,6 @@ def e_step(residuals, params):
         else:
             flt_prob_temp = filtered_prob[:, [t_-1]]
 
-
         # Predicted prob.
         start = 0
         values = vec_trans_prob_mat + np.tile(flt_prob_temp.T, params['regimes']).reshape(-1,1)
@@ -103,15 +102,14 @@ def e_step(residuals, params):
 
     # smooth prob
     smoothed_prob[:, [-1]] = filtered_prob[:, [-1]]
-    print(smoothed_prob[:, [obs-1]])
-    print(f"this is transition prob: {params['transition_prob_mat']}")
+
     for t_ in range(obs-2, -1, -1):  # T-1, ..., 1
         for r_j in range(params['regimes']):  # regime j at time t
             for r_k in range(params['regimes']):  # regime k at time t+1
                 smoothed_joint_prob[t_, r_j, r_k] = smoothed_prob[r_k, t_+1] \
                                                     + filtered_prob[r_j, t_] \
                                                     + params['transition_prob_mat'][r_j, r_k] \
-                                                    - predicted_prob[r_k, t_]
+                                                    - predicted_prob[r_k, t_+1]
 
         for r_j in range(params['regimes']):
             smoothed_prob[r_j, t_] = logsumexp(smoothed_joint_prob[t_, r_j, :])
@@ -126,8 +124,8 @@ def e_step(residuals, params):
 
 def m_step(smoothed_joint_prob, smoothed_prob, no_regimes, parameters, x0, zt, delta_y):
     # estimating transition probability
-    log_vec_p = logsumexp(smoothed_joint_prob, axis=1) - np.tile(logsumexp(smoothed_prob, axis=1), no_regimes)
-    transition_prob_mat =
+    #log_vec_p = logsumexp(smoothed_joint_prob, axis=1) - np.tile(logsumexp(smoothed_prob, axis=1), no_regimes)
+    transition_prob_mat = smoothed_joint_prob.sum(axis=0)
 
     # estimating Covariance matrices
     bound_list = []
