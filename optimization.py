@@ -9,7 +9,6 @@ from statsmodels.tools.numdiff import approx_fprime_cs, approx_hess_cs
 
 
 def marginal_density(x, parameters):
-    print(f'this is x :{x}')
     regimes, k, residuals, smoothed_prob = parameters
     b_mat = vec_matrix(np.array(x[0:k ** 2]))
     lam_m = np.zeros([regimes - 1, k, k])
