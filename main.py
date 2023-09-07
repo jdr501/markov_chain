@@ -125,7 +125,8 @@ def e_step(residuals, params):
 def m_step(smoothed_joint_prob, smoothed_prob, no_regimes, parameters, x0, zt, delta_y):
     # estimating transition probability
     #log_vec_p = logsumexp(smoothed_joint_prob, axis=1) - np.tile(logsumexp(smoothed_prob, axis=1), no_regimes)
-    transition_prob_mat = smoothed_joint_prob.sum(axis=0)
+    transition_prob_mat = smoothed_joint_prob[0:-2, :, :].sum(axis=0) \
+                          / np.repeat(smoothed_prob[:, 0:-2].sum(axis=1), no_regimes, axis=1)
 
     # estimating Covariance matrices
     bound_list = []
