@@ -4,13 +4,14 @@ from scipy.linalg import pinv
 from scipy.linalg import sqrtm
 from scipy.optimize import minimize
 from scipy.special import logsumexp
+from sklearn.covariance import LedoitWolf
 
 import data as data
 import optimization as op
 from matrix_operations import vec_matrix, mat_vec, replace_diagonal
 
 # Model
-regimes = 2
+regimes = 3
 lags = 3
 beta = np.array([0, 0, 0, 1]).reshape((-1, 1))  # must be shaped according to (number of variables, 1)
 np.random.seed(42)
@@ -37,7 +38,7 @@ def initialize(number_regimes, no_lags, beta_hat=None):
         u = ols_resid[:, t]
         u_u[:, t] = np.repeat(u, k) * np.tile(u, k)
     b_matrix = sqrtm(vec_matrix(u_u.sum(axis=1) / obs))
-    b_matrix = b_matrix + np.random.normal(0, 0.1, size=(k, k))
+    b_matrix = b_matrix + np.random.normal(0, 0.01, size=(k, k))
     lam = replace_diagonal(np.random.normal(1, 0, size=k))
     print(lam)
     sigma_array = np.zeros([regimes, k, k])
@@ -76,7 +77,7 @@ def e_step(params):
     for r in range(params['regimes']):
         conditional_prob[r, :] = stats.multivariate_normal(mean=None,
                                                            cov=params['sigma'][r, :, :]).logpdf(params['residuals'].T).T
-    print(f'coniditonal prob: {conditional_prob}')
+
     # Hamilton filter/ filtered probability IN LOG
     for t_ in range(0, obs):
 
@@ -137,8 +138,9 @@ def m_step(smoothed_joint_prob, smoothed_prob, x0, zt, delta_y, parameters):
     ####################################
 
     # transition probability matrix is in logs
-    smoothed_joint_prob[0:-2, :, :]
+
     transition_prob_mat = logsumexp(smoothed_joint_prob[0:-2, :, :], axis=0) - logsumexp(smoothed_prob[:, 0:-2], axis=1)
+
     print(f'this is transition prob mat:{transition_prob_mat} ')
 
 
@@ -162,8 +164,16 @@ def m_step(smoothed_joint_prob, smoothed_prob, x0, zt, delta_y, parameters):
                    bounds=bound_list)
     print(res.message)
     b_mat, sigma = op.b_matrix_sigma(res.x, k, parameters['regimes'])
+
+    mean_zero = np.zeros([k])
+    for regime in range(parameters['regimes']):
+        x = np.random.multivariate_normal(mean=mean_zero, cov=sigma[regime, :, :], size=50, check_valid='ignore')
+        cov = LedoitWolf().fit(x)
+        sigma[regime, :, :] = cov.covariance_
+
     print(f'this is b mat :{b_mat}')
     print(f'this is sigma:{sigma}')
+
     ####################################
     # estimate weighted least-square parameters
     ####################################
@@ -208,7 +218,7 @@ def run_em(regimes, lags, beta_hat=beta, max_itr=100):
           0.012, 0.102, 0.843, 16.52]
 
     params, delta_y_t, z_t_1 = initialize(regimes, lags, beta_hat)
-
+    print('initial expectation step')
     smoothed_joint_prob, smoothed_prob, params['epsilon_0'], log_likelihoods = e_step(params)
     while True:
         break
@@ -230,6 +240,12 @@ def run_em(regimes, lags, beta_hat=beta, max_itr=100):
             params['residuals'], x0 = m_step(smoothed_joint_prob, smoothed_prob, x0, z_t_1, delta_y_t, params)
 
         smoothed_joint_prob, smoothed_prob, params['epsilon_0'], log_likelihoods = e_step(params)
+        print('============================================')
+        print(f'smoothed prob: {np.exp(smoothed_prob)} ')
+        print(f"transition prob matrix : {np.exp(params['transition_prob_mat'])}")
+        print('============================================')
+
+
         i += 1
         if i == max_itr:
             print('maximum iteration reached!')
