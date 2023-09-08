@@ -39,7 +39,7 @@ def marginal_density(x, parameters):
             mean=None, cov=sigma[regime, :, :], allow_singular=True).logpdf(residuals.T).T).sum()
     return -likelihood_array.sum()
 
-
+''' 
 def gradient_respecting_bounds(bounds, fun, eps=1e-8):
     """bounds: list of tuples (lower, upper)"""
 
@@ -52,46 +52,20 @@ def gradient_respecting_bounds(bounds, fun, eps=1e-8):
             grad[k] = (fun(x + d) - fx) / d[k]
         return grad
 
-    return gradient
-
+        return gradient(x)
+'''
 
 ''' 
-
  def hessian(params):
-        """
-        Hessian matrix of the likelihood function, evaluated at the given
-        parameters
-
-        Parameters
-        ----------
-        params : array_like
-            Array of parameters at which to evaluate the Hessian
-            function.
-        transformed : boolean, optional
-            Whether or not `params` is already transformed. Default is True.
-        """
-        params = np.array(params, ndmin=1)
-
-        return approx_hess_cs(params, marginal_density)
+     params = np.array(params, ndmin=1)
+     return approx_hess_cs(params, marginal_density)
 
 
 def fprime(params, transformed=True):
-    """
-    Compute the score function at params.
-
-    Parameters
-    ----------
-    params : array_like
-        Array of parameters at which to evaluate the score
-        function.
-    transformed : boolean, optional
-        Whether or not `params` is already transformed. Default is True.
-    """
     params = np.array(params, ndmin=1)
+    return approx_fprime_cs(params, marginal_density)
 
-    return approx_fprime_cs(params, marginal_density,)
-
- '''
+'''
 
 
 def b_matrix_sigma(x, k, regimes):

@@ -7,7 +7,7 @@ from scipy.special import logsumexp
 
 import data as data
 import optimization as op
-from matrix_operations import vec_matrix, mat_vec
+from matrix_operations import vec_matrix, mat_vec, replace_diagonal
 
 # Model
 regimes = 2
@@ -38,10 +38,14 @@ def initialize(number_regimes, no_lags, beta_hat=None):
         u_u[:, t] = np.repeat(u, k) * np.tile(u, k)
     b_matrix = sqrtm(vec_matrix(u_u.sum(axis=1) / obs))
     b_matrix = b_matrix + np.random.normal(0, 0.1, size=(k, k))
-    lam = []
+    lam = replace_diagonal(np.random.normal(1, 0, size=k))
+    print(lam)
     sigma_array = np.zeros([regimes, k, k])
     for regime in range(regimes):
-        sigma_array[regime, :, :] = b_matrix @ b_matrix.T
+        if regime == 0:
+            sigma_array[regime, :, :] = b_matrix @ b_matrix.T
+        else:
+            sigma_array[regime, :, :] = b_matrix @ lam @ b_matrix.T
 
     params = {'regimes': number_regimes,
               'epsilon_0': (np.log(np.ones(number_regimes) / number_regimes)).reshape(-1, 1),
@@ -72,10 +76,10 @@ def e_step(params):
     for r in range(params['regimes']):
         conditional_prob[r, :] = stats.multivariate_normal(mean=None,
                                                            cov=params['sigma'][r, :, :]).logpdf(params['residuals'].T).T
-
+    print(f'coniditonal prob: {conditional_prob}')
     # Hamilton filter/ filtered probability IN LOG
     for t_ in range(0, obs):
-        print(f'hamilton iteration:{t_} ')
+
         # taking starting values
         if t_ == 0:
             flt_prob_temp = params['epsilon_0']
@@ -99,11 +103,11 @@ def e_step(params):
 
         # filtered Prob
         filtered_prob[:, t_] = p_st_yt - likelihoods[t_]
-
+    print(f'filtered prob: {filtered_prob}')
     # smooth prob
     smoothed_prob[:, [-1]] = filtered_prob[:, [-1]]
 
-    for t_ in range(obs - 2, -1, -1):  # T-1, ..., 1
+    for t_ in range(obs - 2, -2, -1):  # T-1, ..., 1
         for r_j in range(params['regimes']):  # regime j at time t
             for r_k in range(params['regimes']):  # regime k at time t+1
                 tem_smoothed_joint_prob = smoothed_prob[r_k, t_ + 1] \
@@ -114,17 +118,14 @@ def e_step(params):
                     smoothed_joint_prob[t_, r_j, r_k] = tem_smoothed_joint_prob
                 else:
                     t_00_smth_jnt_prob[0, r_j, r_k] = tem_smoothed_joint_prob
+
         if t_ >= 0:
             for r_j in range(params['regimes']):
                 smoothed_prob[r_j, t_] = logsumexp(smoothed_joint_prob[t_, r_j, :])
         else:
             for r_j in range(params['regimes']):
                 t_00_smoothed_prob[r_j, 0] = logsumexp(t_00_smth_jnt_prob[0, r_j, :])
-        print(f'this is t:{t_}')
-        print(f'smoothed  joint prob{smoothed_joint_prob[t_, :, :]}')
-        print(f'smoothed prob{smoothed_prob[:, [t_]]}')
 
-    print(smoothed_joint_prob)
     return smoothed_joint_prob, smoothed_prob, t_00_smoothed_prob, likelihoods.sum()
 
 
@@ -136,8 +137,10 @@ def m_step(smoothed_joint_prob, smoothed_prob, x0, zt, delta_y, parameters):
     ####################################
 
     # transition probability matrix is in logs
-    transition_prob_mat = smoothed_joint_prob[0:-2, :, :].sum(axis=0) \
-                          - smoothed_prob[:, 0:-2].sum(axis=1)
+    smoothed_joint_prob[0:-2, :, :]
+    transition_prob_mat = logsumexp(smoothed_joint_prob[0:-2, :, :], axis=0) - logsumexp(smoothed_prob[:, 0:-2], axis=1)
+    print(f'this is transition prob mat:{transition_prob_mat} ')
+
 
     ####################################
     # estimating Covariance matrices
@@ -159,7 +162,8 @@ def m_step(smoothed_joint_prob, smoothed_prob, x0, zt, delta_y, parameters):
                    bounds=bound_list)
     print(res.message)
     b_mat, sigma = op.b_matrix_sigma(res.x, k, parameters['regimes'])
-
+    print(f'this is b mat :{b_mat}')
+    print(f'this is sigma:{sigma}')
     ####################################
     # estimate weighted least-square parameters
     ####################################
@@ -206,13 +210,16 @@ def run_em(regimes, lags, beta_hat=beta, max_itr=100):
     params, delta_y_t, z_t_1 = initialize(regimes, lags, beta_hat)
 
     smoothed_joint_prob, smoothed_prob, params['epsilon_0'], log_likelihoods = e_step(params)
+    while True:
+        break
 
     avg_loglikelihoods = []
     i = 0
-    while i < 3:
-        avg_loglikelihood = np.mean(log_likelihoods)
+    while i < max_itr:
+        avg_loglikelihood = log_likelihoods
         avg_loglikelihoods.append(avg_loglikelihood)
         if len(avg_loglikelihoods) > 2 and abs(avg_loglikelihoods[-1] - avg_loglikelihoods[-2]) < 0.0001:
+            print(f'optimization successfully terminated reached a solution in {i} iterations!')
             break
 
         # maximization
@@ -223,7 +230,11 @@ def run_em(regimes, lags, beta_hat=beta, max_itr=100):
             params['residuals'], x0 = m_step(smoothed_joint_prob, smoothed_prob, x0, z_t_1, delta_y_t, params)
 
         smoothed_joint_prob, smoothed_prob, params['epsilon_0'], log_likelihoods = e_step(params)
+        i += 1
+        if i == max_itr:
+            print('maximum iteration reached!')
 
     return params
 
-print(run_em(regimes, lags, beta_hat=beta))
+
+print(run_em(regimes, lags, beta_hat=beta, max_itr=15))
