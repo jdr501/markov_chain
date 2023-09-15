@@ -121,13 +121,15 @@ def backward(trans_prob, ln_eta_t):
     print(scaled_back)
     return scaled_back, back
 
-def smoothed(forward_prob, scaled_back):
+def smoothed_joint(forward_prob, scaled_back):
+    alpha_beta = np.zeros(forward_prob.shape)
     smoothed_prob = np.zeros(forward_prob.shape)
+    state_joint = np.zeros(forward_prob.shape)
     for t in range(forward_prob.shape[1]):
         for j in range(forward_prob.shape[0]):
-            smoothed_prob[j, t] = forward_prob[j, t] * scaled_back[j, t]
-        smoothed_sum = logsumexp(smoothed_prob[:, t])
-        smoothed_prob[:, [t]] = smoothed_prob[:, [t]] - smoothed_sum
+            alpha_beta[j, t] = forward_prob[j, t] + scaled_back[j, t]
+        smoothed_sum = logsumexp(alpha_beta[:, t])
+        smoothed_prob[:, [t]] = alpha_beta[:, [t]] - smoothed_sum
 
     return smoothed_prob
 
@@ -166,7 +168,7 @@ def e_step(params):
     print(f'shape of eta t{eta_t.shape}')
     ln_epsilon_t, alpha_forward = forward(params['transition_prob_mat'], eta_t, params['epsilon_0'])
     scaled_back, beta_back = backward(params['transition_prob_mat'], eta_t)
-    smoothed_prob = smoothed(ln_epsilon_t, scaled_back)
+    smoothed_prob = smoothed_joint(ln_epsilon_t, scaled_back)
     t_00_smoothed_prob = smoothed_prob[:, [0]]
 
     return eta_t, smoothed_prob, t_00_smoothed_prob, None
@@ -178,7 +180,7 @@ def m_step(eta_t, smoothed_prob, x0, zt, delta_y, parameters):
     k, obs = parameters['residuals'].shape
     trans_prob = parameters['transition_prob_mat']
 
-    
+
     ####################################
     # estimating transition probability
     ####################################
