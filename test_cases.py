@@ -57,7 +57,8 @@ def initialize(number_regimes, no_lags, beta_hat=None):
               'sigma': sigma_array,
               'residuals': ols_resid,
               'VECM_params': None}
-    return params, delta_y_t, z_t_1,
+    return params, delta_y_t, z_t_1
+
 
 def logsumexp(sum):
     max = np.max(sum)
@@ -139,8 +140,8 @@ def trans_prob_mat(trans_prob, eta_t, param, n_iter=1):
     obs = eta_t.shape[1]
 
     for n in range(n_iter):
-        ln_epsilon_t, alpha = forward(param['transition_prob_mat'], eta_t, param['epsilon_0'])
-        scaled_back, beta = backward(param['transition_prob_mat'], eta_t)
+        ln_epsilon_t, alpha = forward(param['transition_prob_mat'], conditional_prob, param['epsilon_0'])
+        scaled_back, beta = backward(param['transition_prob_mat'], conditional_prob)
         alpha = np.exp(alpha).T
         beta = np.exp(beta).T
 
@@ -160,140 +161,13 @@ def trans_prob_mat(trans_prob, eta_t, param, n_iter=1):
 
 
 
+#===========================================================
+params, delta_y_t, z_t_1 = initialize(regimes, lags, beta_hat=beta)
 
+conditional_prob = cond_prob(params)
 
+#ln_epsilon_t, alpha = forward(params['transition_prob_mat'], conditional_prob, params['epsilon_0'])
+#scaled_back, back = backward(params['transition_prob_mat'], conditional_prob)
 
-
-
-
-# expectation step
-def e_step(params):
-
-    return smoothed_joint_prob, smoothed_prob, t_00_smoothed_prob, likelihoods.sum()
-
-
-def m_step(smoothed_joint_prob, smoothed_prob, x0, zt, delta_y, parameters):
-    # optimization additional arguments (tuple)
-    k, obs = parameters['residuals'].shape
-    ####################################
-    # estimating transition probability
-    ####################################
-
-    # transition probability matrix is in logs
-    A = np.zeros([parameters['regimes'], obs])
-    A[:, [0]] = parameters['epsilon_0']
-    A[:, 1:-1] = smoothed_prob[:, 0:-2]
-    print(A)
-    transition_prob_mat = logsumexp(smoothed_joint_prob[0:-2, :, :], axis=0) - logsumexp(A, axis=1)
-
-    print(f'this is transition prob mat:{transition_prob_mat} ')
-
-    ####################################
-    # estimating Covariance matrices
-    ####################################
-
-    # bounds to ensure positive semi-definite
-    bound_list = []
-    for i in range(len(x0)):
-        if i < k ** 2:
-            bound_list.append((None, None))
-        else:
-            bound_list.append((0.01, None))
-    bound_list = tuple(bound_list)
-
-    # no need to take  exponential of smoothed prob as optimization file does it there.
-    op_params = [parameters['regimes'], k, parameters['residuals'], smoothed_prob]
-
-    res = minimize(op.marginal_density, x0, args=op_params, method='cobyla',
-                   bounds=bound_list)
-    print(res.message)
-    b_mat, sigma = op.b_matrix_sigma(res.x, k, parameters['regimes'])
-
-    mean_zero = np.zeros([k])
-    for regime in range(parameters['regimes']):
-        x = np.random.multivariate_normal(mean=mean_zero, cov=sigma[regime, :, :], size=50, check_valid='ignore')
-        cov = LedoitWolf().fit(x)
-        sigma[regime, :, :] = cov.covariance_
-
-    print(f'this is b mat :{b_mat}')
-    print(f'this is sigma:{sigma}')
-
-    ####################################
-    # estimate weighted least-square parameters
-    ####################################
-
-    for regime in range(parameters['regimes']):
-        t_sum = np.zeros([zt.shape[0], zt.shape[0]])
-        m_sum = np.zeros([zt.shape[0] * k, zt.shape[0] * k])
-        m_sum_numo = np.zeros([zt.shape[0] * k, k])
-        t_sum_numo = np.zeros([zt.shape[0] * k, 1])
-
-        for t in range(zt.shape[1]):
-            t_sum += np.exp(smoothed_prob[regime, t]) * zt[:, [t]] @ zt[:, [t]].T
-        m_sum += np.kron(t_sum, pinv(sigma[regime, :, :]))
-        denominator = pinv(m_sum)
-
-    for t in range(zt.shape[1]):
-        for regime in range(parameters['regimes']):
-            m_sum_numo += np.kron(np.exp(smoothed_prob[regime, t]) * zt[:, [t]], pinv(sigma[regime, :, :]))
-        t_sum_numo += m_sum_numo @ delta_y[:, [t]]
-
-    theta_hat = denominator @ t_sum_numo
-
-    ####################################
-    # residuals estimate
-    ####################################
-
-    resid = np.zeros(delta_y.shape)
-    for t in range(zt.shape[1]):
-        resid[:, [t]] = delta_y[:, [t]] - np.kron(zt[:, [t]].T, np.identity(delta_y.shape[0])) @ theta_hat
-
-    return transition_prob_mat, b_mat, sigma, theta_hat, resid, res.x
-
-
-# initialization
-
-
-def run_em(regimes, lags, beta_hat=beta, max_itr=100):
-    x0 = [5.96082486e+01, 5.74334765e-01, 2.83277325e-01, 3.66479528e+00,
-          -2.08881529e-01, 6.32170541e-04, -1.09137417e-01, -3.80763529e-01,
-          4.24379418e+00, 1.83658083e-01, 2.16692718e-03, 1.29590368e+00,
-          2.20826553e+00, -2.98484217e-01, -5.38269363e-03, 1.19668239e-03,
-          0.012, 0.102, 0.843, 16.52]
-
-    params, delta_y_t, z_t_1 = initialize(regimes, lags, beta_hat)
-    print('initial expectation step')
-    smoothed_joint_prob, smoothed_prob, params['epsilon_0'], log_likelihoods = e_step(params)
-    while True:
-        break
-
-    avg_loglikelihoods = []
-    i = 0
-    while i < max_itr:
-        avg_loglikelihood = log_likelihoods
-        avg_loglikelihoods.append(avg_loglikelihood)
-        if len(avg_loglikelihoods) > 2 and abs(avg_loglikelihoods[-1] - avg_loglikelihoods[-2]) < 0.0001:
-            print(f'optimization successfully terminated reached a solution in {i} iterations!')
-            break
-
-        # maximization
-        params['transition_prob_mat'], \
-            params['B_matrix'], \
-            params['sigma'], \
-            params['VECM_params'], \
-            params['residuals'], x0 = m_step(smoothed_joint_prob, smoothed_prob, x0, z_t_1, delta_y_t, params)
-
-        smoothed_joint_prob, smoothed_prob, params['epsilon_0'], log_likelihoods = e_step(params)
-        print('============================================')
-        print(f'smoothed prob: {np.exp(smoothed_prob)} ')
-        print(f"transition prob matrix : {np.exp(params['transition_prob_mat'])}")
-        print('============================================')
-
-        i += 1
-        if i == max_itr:
-            print('maximum iteration reached!')
-
-    return params
-
-
-print(run_em(regimes, lags, beta_hat=beta, max_itr=15))
+#print(smoothed(ln_epsilon_t, scaled_back))
+print(trans_prob_mat(params['transition_prob_mat'], conditional_prob, params, n_iter=1))
