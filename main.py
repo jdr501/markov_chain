@@ -76,6 +76,7 @@ def cond_prob(param):
     for r in range(param['regimes']):
         conditional_prob[r, :] = stats.multivariate_normal(mean=None,
                                                            cov=param['sigma'][r, :, :]).logpdf(param['residuals'].T).T
+    print(f'shape of eta t :{conditional_prob.shape} ')
     return conditional_prob
 
 
@@ -83,7 +84,6 @@ def forward(trans_prob, ln_eta_t, ini_dist):
     alpha = np.zeros((trans_prob.shape[0], ln_eta_t.shape[1]))
     ln_epsilon_t = np.zeros((trans_prob.shape[0], ln_eta_t.shape[1]))
     sum_alpha_t = np.zeros(alpha.shape[1])
-    print(f'initial dst shape: {ini_dist * ln_eta_t[:, [0]]}')
     alpha[:, [0]] = ini_dist * ln_eta_t[:, [0]]
     print(alpha[:, [0]])
     for t in range(1, ln_eta_t.shape[1]):
@@ -139,18 +139,18 @@ def trans_prob_mat(trans_prob, eta_t, param, n_iter=1):
     obs = eta_t.shape[1]
 
     for n in range(n_iter):
-        ln_epsilon_t, alpha = forward(param['transition_prob_mat'], eta_t, param['epsilon_0'])
-        scaled_back, beta = backward(param['transition_prob_mat'], eta_t)
+        ln_epsilon_t, alpha = forward(param['transition_prob_mat'], np.log(eta_t.T), param['epsilon_0'])
+        scaled_back, beta = backward(param['transition_prob_mat'], np.log(eta_t.T))
         alpha = np.exp(alpha).T
         beta = np.exp(beta).T
 
         xi = np.zeros([m, m, obs - 1])
         for t in range(obs - 1):
+
             denominator = np.dot(np.dot(alpha[t, :].T, trans_prob) * eta_t[[t + 1],:].T, beta[t + 1, :])
             for i in range(m):
                 numerator = alpha[t, i] * trans_prob[i, :] * eta_t[[t + 1], i].T * beta[t + 1, :].T
-                print(numerator / denominator)
-                print(denominator.shape)
+
                 xi[i, :, t] = numerator / denominator
 
         gamma = np.sum(xi, axis=1)
@@ -174,8 +174,11 @@ def e_step(params):
 
 def m_step(eta_t, smoothed_prob, x0, zt, delta_y, parameters):
     # optimization additional arguments (tuple)
+    print('========Optimization=========')
     k, obs = parameters['residuals'].shape
     trans_prob = parameters['transition_prob_mat']
+
+    
     ####################################
     # estimating transition probability
     ####################################
@@ -264,6 +267,7 @@ def run_em(regimes, lags, beta_hat=beta, max_itr=100):
 
     avg_loglikelihoods = []
     i = 0
+    print(f'this is itteration: {i}//////////')
     while i < max_itr:
         avg_loglikelihood = log_likelihoods
         avg_loglikelihoods.append(avg_loglikelihood)
