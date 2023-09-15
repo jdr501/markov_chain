@@ -83,7 +83,7 @@ def forward(trans_prob, ln_eta_t, ini_dist):
     alpha = np.zeros((trans_prob.shape[0], ln_eta_t.shape[1]))
     ln_epsilon_t = np.zeros((trans_prob.shape[0], ln_eta_t.shape[1]))
     sum_alpha_t = np.zeros(alpha.shape[1])
-
+    print(f'initial dst shape: {ini_dist * ln_eta_t[:, [0]]}')
     alpha[:, [0]] = ini_dist * ln_eta_t[:, [0]]
     print(alpha[:, [0]])
     for t in range(1, ln_eta_t.shape[1]):
@@ -160,31 +160,26 @@ def trans_prob_mat(trans_prob, eta_t, param, n_iter=1):
 
 
 
-
-
-
-
-
-
 # expectation step
 def e_step(params):
+    eta_t = cond_prob(params)
+    print(f'shape of eta t{eta_t.shape}')
+    ln_epsilon_t, alpha_forward = forward(params['transition_prob_mat'], eta_t, params['epsilon_0'])
+    scaled_back, beta_back = backward(params['transition_prob_mat'], eta_t)
+    smoothed_prob = smoothed(ln_epsilon_t, scaled_back)
+    t_00_smoothed_prob = smoothed_prob[:, [0]]
 
-    return smoothed_joint_prob, smoothed_prob, t_00_smoothed_prob, likelihoods.sum()
+    return eta_t, smoothed_prob, t_00_smoothed_prob, None
 
 
-def m_step(smoothed_joint_prob, smoothed_prob, x0, zt, delta_y, parameters):
+def m_step(eta_t, smoothed_prob, x0, zt, delta_y, parameters):
     # optimization additional arguments (tuple)
     k, obs = parameters['residuals'].shape
+    trans_prob = parameters['transition_prob_mat']
     ####################################
     # estimating transition probability
     ####################################
-
-    # transition probability matrix is in logs
-    A = np.zeros([parameters['regimes'], obs])
-    A[:, [0]] = parameters['epsilon_0']
-    A[:, 1:-1] = smoothed_prob[:, 0:-2]
-    print(A)
-    transition_prob_mat = logsumexp(smoothed_joint_prob[0:-2, :, :], axis=0) - logsumexp(A, axis=1)
+    transition_prob_mat = trans_prob_mat(trans_prob, eta_t, parameters, n_iter=1)
 
     print(f'this is transition prob mat:{transition_prob_mat} ')
 
