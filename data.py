@@ -43,4 +43,5 @@ def data_matrix(data_frame, lag, beta=None):
     delta_y_t_lags = data_mat[3][: -(k + 2)]
     v0_v1 = data_mat[3][-(k + 2):- k]
     z_t_1 = np.vstack((v0_v1, beta_trn_y_t_1, delta_y_t_lags))
+    print(f'shape of exogenous: {z_t_1.shape}')
     return delta_y_t, z_t_1, resid

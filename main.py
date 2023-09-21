@@ -10,6 +10,7 @@ import data as data
 import optimization as op
 from matrix_operations import vec_matrix, mat_vec, replace_diagonal
 
+print(f'this is eps:{np.finfo(np.float64).eps}')
 # Model
 regimes = 3
 lags = 3
