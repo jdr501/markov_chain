@@ -3,16 +3,16 @@ from scipy import stats
 from scipy.linalg import pinv
 from scipy.linalg import sqrtm
 from scipy.optimize import minimize
-from scipy.special import logsumexp
+# from scipy.special import logsumexp
 from sklearn.covariance import LedoitWolf
 
 import data as data
 import optimization as op
 from matrix_operations import vec_matrix, mat_vec, replace_diagonal
 
-print(f'this is eps:{np.finfo(np.float64).eps}')
+# print(np.log(0))
 # Model
-regimes = 3
+regimes = 2
 lags = 3
 beta = np.array([0, 0, 0, 1]).reshape((-1, 1))  # must be shaped according to (number of variables, 1)
 np.random.seed(42)
@@ -59,91 +59,134 @@ def initialize(number_regimes, no_lags, beta_hat=None):
               'VECM_params': None}
     return params, delta_y_t, z_t_1,
 
+def logsumexp(sum):
+    max = np.max(sum)
+    if max > 1e30 or max < -1e30:
+        return max
+    else:
+        a = np.exp(sum[0] - max)
+        for i in range(1, len(sum)):
+            a += np.exp(sum[i] - max)
+        return np.log(a) + max
+
+
+def cond_prob(param):
+    obs = param['residuals'].shape[1]
+    conditional_prob = np.zeros([param['regimes'], obs])  # y_t|s_t = j conditional density of Y for a given state
+    for r in range(param['regimes']):
+        conditional_prob[r, :] = stats.multivariate_normal(mean=None,
+                                                           cov=param['sigma'][r, :, :]).logpdf(param['residuals'].T).T
+    print(f'shape of eta t :{conditional_prob.shape} ')
+    return conditional_prob
+
+
+def forward(trans_prob, ln_eta_t, ini_dist):
+    alpha = np.zeros((trans_prob.shape[0], ln_eta_t.shape[1]))
+    ln_epsilon_t = np.zeros((trans_prob.shape[0], ln_eta_t.shape[1]))
+    sum_alpha_t = np.zeros(alpha.shape[1])
+    alpha[:, [0]] = ini_dist * ln_eta_t[:, [0]]
+    print(alpha[:, [0]])
+    for t in range(1, ln_eta_t.shape[1]):
+        for j in range(trans_prob.shape[0]):
+            # Matrix Computation Steps
+            #                  ((1x2) . (1x2))      *     (1)
+            #                        (1)            *     (1)
+            alpha_trans = alpha[:, t - 1] + trans_prob[:, j]
+            alpha[j, t] = logsumexp(alpha_trans) + ln_eta_t[j, t]
+    for t in range(0, ln_eta_t.shape[1]):
+        sum_alpha_t[t] = logsumexp(alpha[:, t])
+        ln_epsilon_t[:, [t]] = alpha[:, [t]] - sum_alpha_t[t]
+
+    return ln_epsilon_t, alpha
+
+
+def backward(trans_prob, ln_eta_t):
+    back = np.zeros((trans_prob.shape[0], ln_eta_t.shape[1]))
+    scaled_back = np.zeros((trans_prob.shape[0], ln_eta_t.shape[1]))
+    sum_back_t = np.zeros(back.shape[1])
+
+    # setting beta(T) = 1
+    back[:, [ln_eta_t.shape[1] - 1]] = np.ones([trans_prob.shape[0], 1])
+
+    # Loop in backward way from T-1 to
+    # Due to python indexing the actual loop will be T-2 to 0
+    for t in range(ln_eta_t.shape[1] - 2, -1, -1):
+        for j in range(trans_prob.shape[0]):
+            back_trans = ln_eta_t[j, [t + 1]] + trans_prob[j, :]
+            back[j, t] = back[j, t + 1] + logsumexp(back_trans)
+
+    for t in range(0, ln_eta_t.shape[1]):
+        sum_back_t[t] = logsumexp(back[:, t])
+        scaled_back[:, [t]] = back[:, [t]] - sum_back_t[t]
+    print(scaled_back)
+    return scaled_back, back
+
+def smoothed_joint(forward_prob, scaled_back):
+    alpha_beta = np.zeros(forward_prob.shape)
+    smoothed_prob = np.zeros(forward_prob.shape)
+    state_joint = np.zeros(forward_prob.shape)
+    for t in range(forward_prob.shape[1]):
+        for j in range(forward_prob.shape[0]):
+            alpha_beta[j, t] = forward_prob[j, t] + scaled_back[j, t]
+        smoothed_sum = logsumexp(alpha_beta[:, t])
+        smoothed_prob[:, [t]] = alpha_beta[:, [t]] - smoothed_sum
+
+    return smoothed_prob
+
+
+def trans_prob_mat(trans_prob, eta_t, param, n_iter=1):
+    trans_prob = np.exp(trans_prob)
+    eta_t = np.exp(eta_t).T
+    m = trans_prob.shape[0]
+    obs = eta_t.shape[1]
+
+    for n in range(n_iter):
+        ln_epsilon_t, alpha = forward(param['transition_prob_mat'], np.log(eta_t.T), param['epsilon_0'])
+        scaled_back, beta = backward(param['transition_prob_mat'], np.log(eta_t.T))
+        alpha = np.exp(alpha).T
+        beta = np.exp(beta).T
+
+        xi = np.zeros([m, m, obs - 1])
+        for t in range(obs - 1):
+
+            denominator = np.dot(np.dot(alpha[t, :].T, trans_prob) * eta_t[[t + 1],:].T, beta[t + 1, :])
+            for i in range(m):
+                numerator = alpha[t, i] * trans_prob[i, :] * eta_t[[t + 1], i].T * beta[t + 1, :].T
+
+                xi[i, :, t] = numerator / denominator
+
+        gamma = np.sum(xi, axis=1)
+        trans_prob = np.sum(xi, 2) / np.sum(gamma, axis=1).reshape((-1, 1))
+
+    return np.log(trans_prob)
+
+
 
 # expectation step
 def e_step(params):
-    k, obs = params['residuals'].shape  # number of observations
+    eta_t = cond_prob(params)
+    print(f'shape of eta t{eta_t.shape}')
+    ln_epsilon_t, alpha_forward = forward(params['transition_prob_mat'], eta_t, params['epsilon_0'])
+    scaled_back, beta_back = backward(params['transition_prob_mat'], eta_t)
+    smoothed_prob = smoothed_joint(ln_epsilon_t, scaled_back)
+    t_00_smoothed_prob = smoothed_prob[:, [0]]
 
-    # arrays to save estimated values NOTE THAT ALL PROBABILITIES ARE IN LOG!
-    conditional_prob = np.zeros([params['regimes'], obs])  # y_t|s_t = j conditional density of Y for a given state
-    filtered_prob = np.zeros(conditional_prob.shape)  # s_t|y_t
-    predicted_prob = np.zeros(conditional_prob.shape)  # s_t | y_t-1
-    likelihoods = np.zeros([obs])  # marginal density of observed variables
-    smoothed_joint_prob = np.zeros([obs, params['regimes'], params['regimes']])  # joint prob S_t = j, s_t-1 = k | y_T
-    smoothed_prob = np.zeros(conditional_prob.shape)  # prob S_t = j| y_T
-    t_00_smth_jnt_prob = np.zeros([1, params['regimes'], params['regimes']])
-    t_00_smoothed_prob = np.zeros([params['regimes'], 1])
-    vec_trans_prob_mat = mat_vec(params['transition_prob_mat'])
-    # conditional_prob of the observed variables IN LOG
-    for r in range(params['regimes']):
-        conditional_prob[r, :] = stats.multivariate_normal(mean=None,
-                                                           cov=params['sigma'][r, :, :]).logpdf(params['residuals'].T).T
-
-    # Hamilton filter/ filtered probability IN LOG
-    for t_ in range(0, obs):
-
-        # taking starting values
-        if t_ == 0:
-            flt_prob_temp = params['epsilon_0']
-        else:
-            flt_prob_temp = filtered_prob[:, [t_ - 1]]
-
-        # Predicted prob.
-        start = 0
-        values = vec_trans_prob_mat + np.tile(flt_prob_temp.T, params['regimes']).reshape(-1, 1)
-
-        for r in range(params['regimes']):
-            sum_over = values[start:start + params['regimes']]
-            predicted_prob[r, t_] = logsumexp(sum_over)
-            start += params['regimes']
-
-        # joint prob
-        p_st_yt = filtered_prob[:, t_] + conditional_prob[:, t_]
-
-        # log likelihood of each observation
-        likelihoods[t_] = logsumexp(p_st_yt)  #
-
-        # filtered Prob
-        filtered_prob[:, t_] = p_st_yt - likelihoods[t_]
-    print(f'filtered prob: {filtered_prob}')
-    # smooth prob
-    smoothed_prob[:, [-1]] = filtered_prob[:, [-1]]
-
-    for t_ in range(obs - 2, -2, -1):  # T-1, ..., 1
-        for r_j in range(params['regimes']):  # regime j at time t
-            for r_k in range(params['regimes']):  # regime k at time t+1
-                tem_smoothed_joint_prob = smoothed_prob[r_k, t_ + 1] \
-                                          + filtered_prob[r_j, t_] \
-                                          + params['transition_prob_mat'][r_j, r_k] \
-                                          - predicted_prob[r_k, t_ + 1]
-                if t_ >= 0:
-                    smoothed_joint_prob[t_, r_j, r_k] = tem_smoothed_joint_prob
-                else:
-                    t_00_smth_jnt_prob[0, r_j, r_k] = tem_smoothed_joint_prob
-
-        if t_ >= 0:
-            for r_j in range(params['regimes']):
-                smoothed_prob[r_j, t_] = logsumexp(smoothed_joint_prob[t_, r_j, :])
-        else:
-            for r_j in range(params['regimes']):
-                t_00_smoothed_prob[r_j, 0] = logsumexp(t_00_smth_jnt_prob[0, r_j, :])
-
-    return smoothed_joint_prob, smoothed_prob, t_00_smoothed_prob, likelihoods.sum()
+    return eta_t, smoothed_prob, t_00_smoothed_prob, None
 
 
-def m_step(smoothed_joint_prob, smoothed_prob, x0, zt, delta_y, parameters):
+def m_step(eta_t, smoothed_prob, x0, zt, delta_y, parameters):
     # optimization additional arguments (tuple)
-    k = parameters['residuals'].shape[0]
+    print('========Optimization=========')
+    k, obs = parameters['residuals'].shape
+    trans_prob = parameters['transition_prob_mat']
+
+
     ####################################
     # estimating transition probability
     ####################################
-
-    # transition probability matrix is in logs
-
-    transition_prob_mat = logsumexp(smoothed_joint_prob[0:-2, :, :], axis=0) - logsumexp(smoothed_prob[:, 0:-2], axis=1)
+    transition_prob_mat = trans_prob_mat(trans_prob, eta_t, parameters, n_iter=1)
 
     print(f'this is transition prob mat:{transition_prob_mat} ')
-
 
     ####################################
     # estimating Covariance matrices
@@ -226,6 +269,7 @@ def run_em(regimes, lags, beta_hat=beta, max_itr=100):
 
     avg_loglikelihoods = []
     i = 0
+    print(f'this is itteration: {i}//////////')
     while i < max_itr:
         avg_loglikelihood = log_likelihoods
         avg_loglikelihoods.append(avg_loglikelihood)
@@ -245,7 +289,6 @@ def run_em(regimes, lags, beta_hat=beta, max_itr=100):
         print(f'smoothed prob: {np.exp(smoothed_prob)} ')
         print(f"transition prob matrix : {np.exp(params['transition_prob_mat'])}")
         print('============================================')
-
 
         i += 1
         if i == max_itr:
